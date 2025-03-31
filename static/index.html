@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hotel Management System</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .nav-tabs .nav-link {
+            color: #495057;
+        }
+        .nav-tabs .nav-link.active {
+            color: #007bff;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .card {
+            margin-bottom: 1rem;
+        }
+        .btn-toolbar {
+            margin-bottom: 1rem;
+        }
+        #searchResults {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        .room-card {
+            transition: transform 0.2s;
+        }
+        .room-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .loading {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 1000;
+        }
+        .error-message {
+            color: #dc3545;
+            margin-top: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid py-4">
+        <!-- User Type Selection -->
+        <div class="row mb-4">
+            <div class="col">
+                <div class="btn-group" role="group">
+                    <input type="radio" class="btn-check" name="userType" id="customerBtn" value="customer" checked>
+                    <label class="btn btn-outline-primary" for="customerBtn">Customer</label>
+                    <input type="radio" class="btn-check" name="userType" id="employeeBtn" value="employee">
+                    <label class="btn btn-outline-primary" for="employeeBtn">Employee</label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Navigation Tabs -->
+        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+            <li class="nav-item">
+                <a class="nav-link active" id="search-tab" data-bs-toggle="tab" href="#search" role="tab">Search Rooms</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" id="bookings-tab" data-bs-toggle="tab" href="#bookings" role="tab">My Bookings</a>
+            </li>
+            <li class="nav-item employee-only" style="display: none;">
+                <a class="nav-link" id="manage-tab" data-bs-toggle="tab" href="#manage" role="tab">Manage</a>
+            </li>
+            <li class="nav-item employee-only" style="display: none;">
+                <a class="nav-link" id="views-tab" data-bs-toggle="tab" href="#views" role="tab">Views</a>
+            </li>
+        </ul>
+
+        <!-- Tab Content -->
+        <div class="tab-content mt-3">
+            <!-- Search Tab -->
+            <div class="tab-pane fade show active" id="search" role="tabpanel">
+                <div class="row">
+                    <!-- Search Form -->
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Search Criteria</h5>
+                                <form id="searchForm">
+                                    <div class="form-group">
+                                        <label>Dates</label>
+                                        <input type="date" class="form-control mb-2" id="startDate" required>
+                                        <input type="date" class="form-control" id="endDate" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Room Capacity</label>
+                                        <input type="number" class="form-control" id="capacity" min="1">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Area</label>
+                                        <input type="text" class="form-control" id="area">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Hotel Chain</label>
+                                        <select class="form-control" id="hotelChain">
+                                            <option value="">Any</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Hotel Category</label>
+                                        <select class="form-control" id="hotelCategory">
+                                            <option value="">Any</option>
+                                            <option value="1">⭐</option>
+                                            <option value="2">⭐⭐</option>
+                                            <option value="3">⭐⭐⭐</option>
+                                            <option value="4">⭐⭐⭐⭐</option>
+                                            <option value="5">⭐⭐⭐⭐⭐</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Max Price</label>
+                                        <input type="number" class="form-control" id="maxPrice" min="0">
+                                    </div>
+                                    <button type="submit" class="btn btn-primary w-100">Search</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Search Results -->
+                    <div class="col-md-8">
+                        <div id="searchResults" class="row"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bookings Tab -->
+            <div class="tab-pane fade" id="bookings" role="tabpanel">
+                <div class="row">
+                    <div class="col">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Customer Information</h5>
+                                <form id="customerForm" class="mb-4">
+                                    <div class="row">
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label>First Name</label>
+                                                <input type="text" class="form-control" id="firstName" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label>Last Name</label>
+                                                <input type="text" class="form-control" id="lastName" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label>Address</label>
+                                                <input type="text" class="form-control" id="address" required>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary mt-3">Save Customer Info</button>
+                                </form>
+
+                                <h5 class="card-title mt-4">My Bookings</h5>
+                                <div id="bookingsList"></div>
+
+                                <h5 class="card-title mt-4">My Rentings</h5>
+                                <div id="rentingsList"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Management Tab (Employee Only) -->
+            <div class="tab-pane fade" id="manage" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-6">
+                        <!-- Customer Management -->
+                        <div class="card mb-4">
+                            <div class="card-body">
+                                <h5 class="card-title">Customer Management</h5>
+                                <form id="manageCustomerForm">
+                                    <div class="form-group">
+                                        <label>Customer ID</label>
+                                        <input type="number" class="form-control" id="customerId">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>First Name</label>
+                                        <input type="text" class="form-control" id="customerFirstName">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Last Name</label>
+                                        <input type="text" class="form-control" id="customerLastName">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Address</label>
+                                        <input type="text" class="form-control" id="customerAddress">
+                                    </div>
+                                    <div class="btn-toolbar">
+                                        <button type="button" class="btn btn-primary me-2" onclick="updateCustomer()">Update</button>
+                                        <button type="button" class="btn btn-danger" onclick="deleteCustomer()">Delete</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Employee Management -->
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Employee Management</h5>
+                                <form id="manageEmployeeForm">
+                                    <div class="form-group">
+                                        <label>Employee ID</label>
+                                        <input type="number" class="form-control" id="employeeId">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Name</label>
+                                        <input type="text" class="form-control" id="employeeName">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Hotel ID</label>
+                                        <input type="number" class="form-control" id="employeeHotelId">
+                                    </div>
+                                    <div class="btn-toolbar">
+                                        <button type="button" class="btn btn-primary me-2" onclick="updateEmployee()">Update</button>
+                                        <button type="button" class="btn btn-danger" onclick="deleteEmployee()">Delete</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <!-- Hotel Management -->
+                        <div class="card mb-4">
+                            <div class="card-body">
+                                <h5 class="card-title">Hotel Management</h5>
+                                <form id="manageHotelForm">
+                                    <div class="form-group">
+                                        <label>Hotel ID</label>
+                                        <input type="number" class="form-control" id="hotelId">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Chain ID</label>
+                                        <input type="number" class="form-control" id="hotelChainId">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Category</label>
+                                        <select class="form-control" id="hotelCategoryManage">
+                                            <option value="1">⭐</option>
+                                            <option value="2">⭐⭐</option>
+                                            <option value="3">⭐⭐⭐</option>
+                                            <option value="4">⭐⭐⭐⭐</option>
+                                            <option value="5">⭐⭐⭐⭐⭐</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Name</label>
+                                        <input type="text" class="form-control" id="hotelName">
+                                    </div>
+                                    <div class="btn-toolbar">
+                                        <button type="button" class="btn btn-primary me-2" onclick="updateHotel()">Update</button>
+                                        <button type="button" class="btn btn-danger" onclick="deleteHotel()">Delete</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Room Management -->
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Room Management</h5>
+                                <form id="manageRoomForm">
+                                    <div class="form-group">
+                                        <label>Room ID</label>
+                                        <input type="number" class="form-control" id="roomId">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Hotel ID</label>
+                                        <input type="number" class="form-control" id="roomHotelId">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Price</label>
+                                        <input type="number" class="form-control" id="roomPrice" step="0.01">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Capacity</label>
+                                        <input type="number" class="form-control" id="roomCapacity">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Area</label>
+                                        <input type="text" class="form-control" id="roomArea">
+                                    </div>
+                                    <div class="btn-toolbar">
+                                        <button type="button" class="btn btn-primary me-2" onclick="updateRoom()">Update</button>
+                                        <button type="button" class="btn btn-danger" onclick="deleteRoom()">Delete</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Views Tab (Employee Only) -->
+            <div class="tab-pane fade" id="views" role="tabpanel">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Room Capacity View</h5>
+                                <div id="roomCapacityView"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">Room Area View</h5>
+                                <div id="roomAreaView"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div class="loading">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <!-- Modal for Booking/Renting -->
+    <div class="modal fade" id="bookingModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Confirm Booking</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="bookingDetails"></div>
+                    <form id="bookingForm">
+                        <input type="hidden" id="modalRoomId">
+                        <div class="form-group">
+                            <label>Customer ID</label>
+                            <input type="number" class="form-control" id="bookingCustomerId" required>
+                        </div>
+                        <div class="form-group employee-only" style="display: none;">
+                            <label>Employee ID</label>
+                            <input type="number" class="form-control" id="rentingEmployeeId">
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="confirmBooking">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap and other dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
