@@ -91,7 +91,6 @@ class RoomSearch(BaseModel):
     capacity: Optional[int] = None
     area: Optional[str] = None
     hotel_chain: Optional[str] = None
-    hotel_category: Optional[int] = None
     max_price: Optional[float] = None
 
     @validator('start_date', 'end_date')
@@ -117,6 +116,7 @@ class CustomerCreate(BaseModel):
     firstname: str
     lastname: str
     address: str
+    customerid: Optional[int] = None
 
 class BookingCreate(BaseModel):
     room_id: int
@@ -169,12 +169,18 @@ class RentingCreate(BaseModel):
 @app.get("/api/hotel-chains")
 def get_hotel_chains(db = Depends(get_db)):
     try:
-        result = db.execute(text('SELECT * FROM hotelchains'))
+        result = db.execute(text('SELECT * FROM "hotel chains".hotelchains'))
         rows = []
         for row in result:
-            row_dict = {}
-            for idx, col in enumerate(result.keys()):
-                row_dict[col] = row[idx]
+            row_dict = {
+                "chainid": row.chainid,
+                "name": row.cname,
+                "num_of_hotels": row.num_of_hotels,
+                "address": row.caddress,
+                "rating": row.rating,
+                "email": row.cemail,
+                "phone": row.cphone
+            }
             rows.append(row_dict)
         return rows
     except Exception as e:
@@ -182,22 +188,26 @@ def get_hotel_chains(db = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/hotels")
-def get_hotels(chain_id: Optional[int] = None, category: Optional[int] = None, db = Depends(get_db)):
+def get_hotels(chain_id: Optional[int] = None, db = Depends(get_db)):
     try:
-        query = 'SELECT * FROM hotels WHERE 1=1'
+        query = 'SELECT * FROM "hotel chains".hotels WHERE 1=1'
         params = {}
         if chain_id:
             query += " AND chainid = :chain_id"
             params['chain_id'] = chain_id
-        if category:
-            query += " AND category = :category"
-            params['category'] = category
         result = db.execute(text(query), params)
         rows = []
         for row in result:
-            row_dict = {}
-            for idx, col in enumerate(result.keys()):
-                row_dict[col] = row[idx]
+            row_dict = {
+                "hotelid": row.hotelid,
+                "address": row.haddress,
+                "name": row.hname,
+                "num_of_rooms": row.num_of_rooms,
+                "email": row.hemail,
+                "phone": row.hphone,
+                "chainid": row.chainid,
+                "managerid": row.managerid
+            }
             rows.append(row_dict)
         return rows
     except Exception as e:
@@ -211,7 +221,6 @@ def get_available_rooms(
     capacity: Optional[int] = None,
     area: Optional[str] = None,
     hotel_chain: Optional[str] = None,
-    hotel_category: Optional[int] = None,
     max_price: Optional[float] = None,
     db = Depends(get_db)
 ):
@@ -223,17 +232,34 @@ def get_available_rooms(
         # Base query
         query = """
         SELECT r.*, 
-            h.address as hotel_address, 
-            h.email as hotel_email, 
-            h.phone as hotel_phone,
-            hc.name as chain_name
+            h.haddress as hotel_address, 
+            h.hemail as hotel_email, 
+            h.hphone as hotel_phone,
+            h.hname as hotel_name,
+            hc.cname as chain_name,
+            hc.caddress as chain_address,
+            hc.cemail as chain_email,
+            hc.cphone as chain_phone,
+            hc.rating as chain_rating
         FROM "hotel chains".rooms r
         JOIN "hotel chains".hotels h ON r.hotelid = h.hotelid
         JOIN "hotel chains".hotelchains hc ON h.chainid = hc.chainid
-        WHERE 1=1
+        WHERE r.roomid NOT IN (
+            SELECT roomid FROM "hotel chains".bookings 
+            WHERE status = 'Booked' 
+            AND startdate <= :end_date 
+            AND enddate >= :start_date
+            UNION
+            SELECT roomid FROM "hotel chains".rentings 
+            WHERE startdate <= :end_date 
+            AND enddate >= :start_date
+        )
         """
         
-        params = {}
+        params = {
+            "start_date": start,
+            "end_date": end
+        }
         
         # Add filters
         if capacity:
@@ -241,16 +267,12 @@ def get_available_rooms(
             params["capacity"] = capacity
             
         if area:
-            query += " AND h.address ILIKE :area"
+            query += " AND h.haddress ILIKE :area"
             params["area"] = f"%{area}%"
             
         if hotel_chain:
-            query += " AND hc.name ILIKE :chain"
+            query += " AND hc.cname ILIKE :chain"
             params["chain"] = f"%{hotel_chain}%"
-            
-        if hotel_category:
-            query += " AND h.category = :category"
-            params["category"] = hotel_category
             
         if max_price:
             query += " AND r.price <= :max_price"
@@ -269,10 +291,15 @@ def get_available_rooms(
                 "extendable": row.extendable,
                 "amenities": row.amenities,
                 "damages": row.damages,
+                "hotel_name": row.hotel_name,
                 "hotel_address": row.hotel_address,
                 "hotel_email": row.hotel_email,
                 "hotel_phone": row.hotel_phone,
-                "chain_name": row.chain_name
+                "chain_name": row.chain_name,
+                "chain_address": row.chain_address,
+                "chain_email": row.chain_email,
+                "chain_phone": row.chain_phone,
+                "chain_rating": row.chain_rating
             }
             rooms.append(room_dict)
             
@@ -284,86 +311,96 @@ def get_available_rooms(
 @app.post("/api/bookings")
 def create_booking(booking: BookingCreate, db = Depends(get_db)):
     try:
-        logger.debug(f"Creating booking with data: {booking.dict()}")
-        
-        # Check if room exists and get its hotelid
-        room_query = 'SELECT hotelid FROM rooms WHERE roomid = :room_id'
-        result = db.execute(text(room_query), {"room_id": booking.room_id})
-        room = result.first()
-        if not room:
-            logger.error(f"Room not found: {booking.room_id}")
-            raise HTTPException(status_code=404, detail=f"Room {booking.room_id} not found")
-        
         # Check if customer exists
-        customer_query = 'SELECT customerid FROM customers WHERE customerid = :customer_id'
+        customer_query = """
+        SELECT customerid FROM "hotel chains".customers 
+        WHERE customerid = :customer_id
+        """
         result = db.execute(text(customer_query), {"customer_id": booking.customer_id})
         if not result.first():
-            logger.error(f"Customer not found: {booking.customer_id}")
             raise HTTPException(status_code=404, detail=f"Customer {booking.customer_id} not found")
-        
-        # Check if room is available for the given dates
-        availability_query = """
-        SELECT COUNT(*) FROM bookings 
-        WHERE roomid = :room_id 
-        AND ((startdate <= :end_date AND enddate >= :start_date)
-        OR (startdate >= :start_date AND startdate <= :end_date))
+
+        # Check if room exists and get hotel_id
+        hotel_query = """
+        SELECT hotelid FROM "hotel chains".rooms 
+        WHERE roomid = :room_id
         """
-        params = {
+        result = db.execute(text(hotel_query), {"room_id": booking.room_id})
+        hotel_id = result.scalar()
+        if not hotel_id:
+            raise HTTPException(status_code=404, detail=f"Room {booking.room_id} not found")
+        
+        # Check if room is available
+        availability_query = """
+        SELECT COUNT(*) FROM "hotel chains".bookings 
+        WHERE roomid = :room_id 
+        AND status = 'Booked'
+        AND ((startdate <= :end_date AND enddate >= :start_date)
+             OR (startdate >= :start_date AND startdate <= :end_date))
+        """
+        result = db.execute(text(availability_query), {
             "room_id": booking.room_id,
-            "start_date": datetime.strptime(booking.start_date, '%Y-%m-%d').date(),
-            "end_date": datetime.strptime(booking.end_date, '%Y-%m-%d').date()
-        }
-        logger.debug(f"Checking room availability with params: {params}")
-        result = db.execute(text(availability_query), params)
+            "start_date": booking.start_date,
+            "end_date": booking.end_date
+        })
         if result.scalar() > 0:
-            logger.error(f"Room {booking.room_id} not available for dates: {booking.start_date} to {booking.end_date}")
             raise HTTPException(status_code=400, detail="Room is not available for the selected dates")
         
-        # Create the booking
+        # Generate new booking ID
+        booking_id_query = """
+        SELECT COALESCE(MAX(bookingid), 0) + 1 FROM "hotel chains".bookings
+        """
+        result = db.execute(text(booking_id_query))
+        booking_id = result.scalar()
+        
+        # Create booking
         query = """
-        INSERT INTO bookings (roomid, hotelid, customerid, startdate, enddate)
-        VALUES (:room_id, :hotel_id, :customer_id, :start_date, :end_date)
+        INSERT INTO "hotel chains".bookings (bookingid, roomid, hotelid, customerid, startdate, enddate, status)
+        VALUES (:booking_id, :room_id, :hotel_id, :customer_id, :start_date, :end_date, 'Booked')
         RETURNING bookingid
         """
         params = {
-            **booking.dict(),
-            "hotel_id": room[0],
-            "start_date": datetime.strptime(booking.start_date, '%Y-%m-%d').date(),
-            "end_date": datetime.strptime(booking.end_date, '%Y-%m-%d').date()
+            "booking_id": booking_id,
+            "room_id": booking.room_id,
+            "hotel_id": hotel_id,
+            "customer_id": booking.customer_id,
+            "start_date": booking.start_date,
+            "end_date": booking.end_date
         }
-        logger.debug(f"Creating booking with SQL params: {params}")
         result = db.execute(text(query), params)
-        booking_id = result.scalar()
+        new_booking_id = result.scalar()
+        if not new_booking_id:
+            raise HTTPException(status_code=500, detail="Failed to create booking")
+        
         db.commit()
-        logger.info(f"Successfully created booking {booking_id}")
-        return {"bookingid": booking_id}
+        return {"bookingid": new_booking_id}
     except HTTPException as e:
         db.rollback()
         raise e
     except Exception as e:
         db.rollback()
-        logger.error(f"Error in create_booking: {str(e)}", exc_info=True)
+        logger.error(f"Error in create_booking: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to create booking: {str(e)}")
 
 @app.post("/api/rentings")
 def create_renting(renting: RentingCreate, db = Depends(get_db)):
     try:
         # Check if room exists and get its hotelid
-        room_query = 'SELECT hotelid FROM rooms WHERE roomid = :room_id'
+        room_query = 'SELECT hotelid FROM "hotel chains".rooms WHERE roomid = :room_id'
         result = db.execute(text(room_query), {"room_id": renting.room_id})
         room = result.first()
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
         
         # Check if employee exists
-        emp_query = 'SELECT employeeid FROM employees WHERE employeeid = :employee_id'
+        emp_query = 'SELECT employeeid FROM "hotel chains".employees WHERE employeeid = :employee_id'
         result = db.execute(text(emp_query), {"employee_id": renting.employee_id})
         if not result.first():
             raise HTTPException(status_code=404, detail="Employee not found")
         
         # Check if room is available for the given dates
         availability_query = """
-        SELECT COUNT(*) FROM rentings 
+        SELECT COUNT(*) FROM "hotel chains".rentings 
         WHERE roomid = :room_id 
         AND ((startdate <= :end_date AND enddate >= :start_date)
         OR (startdate >= :start_date AND startdate <= :end_date))
@@ -378,7 +415,7 @@ def create_renting(renting: RentingCreate, db = Depends(get_db)):
         
         # Create the renting
         query = """
-        INSERT INTO rentings (roomid, hotelid, customerid, employeeid, startdate, enddate, status)
+        INSERT INTO "hotel chains".rentings (roomid, hotelid, customerid, employeeid, startdate, enddate, status)
         VALUES (:room_id, :hotel_id, :customer_id, :employee_id, :start_date, :end_date, 'CheckedIn')
         RETURNING rentingid
         """
@@ -394,7 +431,7 @@ def create_renting(renting: RentingCreate, db = Depends(get_db)):
         # If this was from a booking, update the booking status
         if renting.booking_id:
             update_query = """
-            UPDATE bookings 
+            UPDATE "hotel chains".bookings 
             SET status = 'CheckedIn'
             WHERE bookingid = :booking_id
             """
@@ -413,17 +450,26 @@ def create_renting(renting: RentingCreate, db = Depends(get_db)):
 @app.get("/api/employees")
 def get_employees(hotel_id: Optional[int] = None, db = Depends(get_db)):
     try:
-        query = 'SELECT * FROM employees WHERE 1=1'
+        query = 'SELECT * FROM "hotel chains".employees WHERE 1=1'
         params = {}
         if hotel_id:
             query += " AND hotelid = :hotel_id"
             params["hotel_id"] = hotel_id
+        
         result = db.execute(text(query), params)
         rows = []
         for row in result:
-            row_dict = {}
-            for idx, col in enumerate(result.keys()):
-                row_dict[col] = row[idx]
+            row_dict = {
+                "employeeid": row.employeeid,
+                "firstname": row.efirstname,
+                "lastname": row.elastname,
+                "ssnsin": row.ssnsin,
+                "address": row.eaddress,
+                "hotelid": row.hotelid,
+                "role": row.erole,
+                "phone": row.ephone,
+                "email": row.eemail
+            }
             rows.append(row_dict)
         return rows
     except Exception as e:
@@ -433,13 +479,33 @@ def get_employees(hotel_id: Optional[int] = None, db = Depends(get_db)):
 @app.get("/api/customers/{customer_id}/bookings")
 def get_customer_bookings(customer_id: int, db = Depends(get_db)):
     try:
-        query = 'SELECT * FROM bookings WHERE customerid = :customer_id'
+        query = """
+        SELECT b.bookingid, b.roomid, b.hotelid, b.customerid, 
+               b.startdate, b.enddate, b.status,
+               r.price, r.view_type, r.capacity,
+               h.hname as hotel_name, h.haddress as hotel_address
+        FROM "hotel chains".bookings b
+        JOIN "hotel chains".rooms r ON b.roomid = r.roomid
+        JOIN "hotel chains".hotels h ON b.hotelid = h.hotelid
+        WHERE b.customerid = :customer_id
+        """
         result = db.execute(text(query), {"customer_id": customer_id})
         rows = []
         for row in result:
-            row_dict = {}
-            for idx, col in enumerate(result.keys()):
-                row_dict[col] = row[idx]
+            row_dict = {
+                "bookingid": row.bookingid,
+                "roomid": row.roomid,
+                "hotelid": row.hotelid,
+                "customerid": row.customerid,
+                "startdate": row.startdate,
+                "enddate": row.enddate,
+                "status": row.status,
+                "price": float(row.price) if row.price else None,
+                "view_type": row.view_type,
+                "capacity": row.capacity,
+                "hotel_name": row.hotel_name,
+                "hotel_address": row.hotel_address
+            }
             rows.append(row_dict)
         return rows
     except Exception as e:
@@ -449,13 +515,38 @@ def get_customer_bookings(customer_id: int, db = Depends(get_db)):
 @app.get("/api/customers/{customer_id}/rentings")
 def get_customer_rentings(customer_id: int, db = Depends(get_db)):
     try:
-        query = 'SELECT * FROM rentings WHERE customerid = :customer_id'
+        query = """
+        SELECT r.rentingid, r.roomid, r.hotelid, r.customerid, 
+               r.employeeid, r.startdate, r.enddate, r.status,
+               rm.price, rm.view_type, rm.capacity,
+               h.hname as hotel_name, h.haddress as hotel_address,
+               e.efirstname as employee_firstname, e.elastname as employee_lastname
+        FROM "hotel chains".rentings r
+        JOIN "hotel chains".rooms rm ON r.roomid = rm.roomid
+        JOIN "hotel chains".hotels h ON r.hotelid = h.hotelid
+        LEFT JOIN "hotel chains".employees e ON r.employeeid = e.employeeid
+        WHERE r.customerid = :customer_id
+        """
         result = db.execute(text(query), {"customer_id": customer_id})
         rows = []
         for row in result:
-            row_dict = {}
-            for idx, col in enumerate(result.keys()):
-                row_dict[col] = row[idx]
+            row_dict = {
+                "rentingid": row.rentingid,
+                "roomid": row.roomid,
+                "hotelid": row.hotelid,
+                "customerid": row.customerid,
+                "employeeid": row.employeeid,
+                "startdate": row.startdate,
+                "enddate": row.enddate,
+                "status": row.status,
+                "price": float(row.price) if row.price else None,
+                "view_type": row.view_type,
+                "capacity": row.capacity,
+                "hotel_name": row.hotel_name,
+                "hotel_address": row.hotel_address,
+                "employee_firstname": row.employee_firstname,
+                "employee_lastname": row.employee_lastname
+            }
             rows.append(row_dict)
         return rows
     except Exception as e:
@@ -465,9 +556,29 @@ def get_customer_rentings(customer_id: int, db = Depends(get_db)):
 @app.post("/api/customers")
 def create_customer(customer: CustomerCreate, db = Depends(get_db)):
     try:
+        # If customerid is provided, check if it exists
+        if customer.customerid:
+            check_query = """
+            SELECT customerid FROM "hotel chains".customers 
+            WHERE customerid = :customerid
+            """
+            result = db.execute(text(check_query), {"customerid": customer.customerid})
+            if result.first():
+                raise HTTPException(status_code=400, detail=f"Customer with ID {customer.customerid} already exists")
+        
+        # If no customerid provided, get the next available ID
+        if not customer.customerid:
+            id_query = """
+            SELECT COALESCE(MAX(customerid), 0) + 1 
+            FROM "hotel chains".customers
+            """
+            result = db.execute(text(id_query))
+            customer.customerid = result.scalar()
+        
+        # Insert the customer
         query = """
-        INSERT INTO customers (firstname, lastname, address)
-        VALUES (:firstname, :lastname, :address)
+        INSERT INTO "hotel chains".customers (customerid, firstname, lastname, address, dateofregistration)
+        VALUES (:customerid, :firstname, :lastname, :address, CURRENT_DATE)
         RETURNING customerid
         """
         result = db.execute(text(query), customer.dict())
@@ -479,19 +590,57 @@ def create_customer(customer: CustomerCreate, db = Depends(get_db)):
         logger.error(f"Error in create_customer: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create customer: {str(e)}")
 
-# Additional endpoints for management
 @app.put("/api/customers/{customer_id}")
 def update_customer(customer_id: int, customer: CustomerCreate, db = Depends(get_db)):
     try:
+        # Check if customer exists
+        check_query = """
+        SELECT customerid FROM "hotel chains".customers 
+        WHERE customerid = :customer_id
+        """
+        result = db.execute(text(check_query), {"customer_id": customer_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
+        
+        # Check for active bookings or rentings
+        check_active_query = """
+        SELECT 
+            CASE 
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".bookings 
+                    WHERE customerid = :customer_id 
+                    AND status IN ('Booked', 'CheckedIn')
+                ) THEN true
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".rentings 
+                    WHERE customerid = :customer_id 
+                    AND status = 'CheckedIn'
+                ) THEN true
+                ELSE false
+            END as has_active
+        """
+        result = db.execute(text(check_active_query), {"customer_id": customer_id})
+        if result.scalar():
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot update customer with active bookings or rentings"
+            )
+        
+        # Update customer
         query = """
-        UPDATE customers 
+        UPDATE "hotel chains".customers 
         SET firstname = :firstname, lastname = :lastname, address = :address
         WHERE customerid = :customer_id
         """
         params = {**customer.dict(), "customer_id": customer_id}
-        db.execute(text(query), params)
+        result = db.execute(text(query), params)
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
         db.commit()
         return {"message": "Customer updated successfully"}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in update_customer: {str(e)}")
@@ -500,16 +649,54 @@ def update_customer(customer_id: int, customer: CustomerCreate, db = Depends(get
 @app.delete("/api/customers/{customer_id}")
 def delete_customer(customer_id: int, db = Depends(get_db)):
     try:
-        query = 'DELETE FROM customers WHERE customerid = :customer_id'
-        db.execute(text(query), {"customer_id": customer_id})
+        # Check if customer exists
+        check_query = """
+        SELECT customerid FROM "hotel chains".customers 
+        WHERE customerid = :customer_id
+        """
+        result = db.execute(text(check_query), {"customer_id": customer_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
+        
+        # Check for active bookings or rentings
+        check_active_query = """
+        SELECT 
+            CASE 
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".bookings 
+                    WHERE customerid = :customer_id 
+                    AND status IN ('Booked', 'CheckedIn')
+                ) THEN true
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".rentings 
+                    WHERE customerid = :customer_id 
+                    AND status = 'CheckedIn'
+                ) THEN true
+                ELSE false
+            END as has_active
+        """
+        result = db.execute(text(check_active_query), {"customer_id": customer_id})
+        if result.scalar():
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot delete customer with active bookings or rentings"
+            )
+        
+        # Delete customer
+        query = 'DELETE FROM "hotel chains".customers WHERE customerid = :customer_id'
+        result = db.execute(text(query), {"customer_id": customer_id})
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
         db.commit()
         return {"message": "Customer deleted successfully"}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in delete_customer: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# SQL Views endpoints
 @app.get("/api/views/room-capacity")
 def get_room_capacity_view(db = Depends(get_db)):
     try:
@@ -519,8 +706,8 @@ def get_room_capacity_view(db = Depends(get_db)):
                SUM(CASE WHEN r.capacity = 2 THEN 1 ELSE 0 END) as double_rooms,
                SUM(CASE WHEN r.capacity = 3 THEN 1 ELSE 0 END) as triple_rooms,
                SUM(CASE WHEN r.capacity >= 4 THEN 1 ELSE 0 END) as other_rooms
-        FROM hotels h
-        JOIN rooms r ON h.hotelid = r.hotelid
+        FROM "hotel chains".hotels h
+        JOIN "hotel chains".rooms r ON h.hotelid = r.hotelid
         GROUP BY h.hotelid, h.name
         ORDER BY h.name
         """
@@ -543,8 +730,8 @@ def get_room_area_view(db = Depends(get_db)):
         SELECT h.name as hotel_name, r.area, COUNT(*) as room_count,
                MIN(r.price) as min_price, MAX(r.price) as max_price,
                AVG(r.price) as avg_price
-        FROM hotels h
-        JOIN rooms r ON h.hotelid = r.hotelid
+        FROM "hotel chains".hotels h
+        JOIN "hotel chains".rooms r ON h.hotelid = r.hotelid
         GROUP BY h.hotelid, h.name, r.area
         ORDER BY h.name, r.area
         """
@@ -560,19 +747,86 @@ def get_room_area_view(db = Depends(get_db)):
         logger.error(f"Error in get_room_area_view: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Additional endpoints for hotel and room management
 @app.put("/api/hotels/{hotel_id}")
 def update_hotel(hotel_id: int, hotel_data: dict, db = Depends(get_db)):
     try:
+        # Check if hotel exists
+        check_query = """
+        SELECT hotelid FROM "hotel chains".hotels 
+        WHERE hotelid = :hotel_id
+        """
+        result = db.execute(text(check_query), {"hotel_id": hotel_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail=f"Hotel {hotel_id} not found")
+        
+        # Check if chain exists
+        if "chain_id" in hotel_data:
+            chain_query = """
+            SELECT chainid FROM "hotel chains".hotelchains 
+            WHERE chainid = :chain_id
+            """
+            result = db.execute(text(chain_query), {"chain_id": hotel_data["chain_id"]})
+            if not result.first():
+                raise HTTPException(status_code=404, detail=f"Hotel chain {hotel_data['chain_id']} not found")
+        
+        # Check if manager exists
+        if "manager_id" in hotel_data:
+            manager_query = """
+            SELECT employeeid FROM "hotel chains".employees 
+            WHERE employeeid = :manager_id
+            """
+            result = db.execute(text(manager_query), {"manager_id": hotel_data["manager_id"]})
+            if not result.first():
+                raise HTTPException(status_code=404, detail=f"Employee {hotel_data['manager_id']} not found")
+        
+        # Check for active bookings or rentings if trying to change chain
+        if "chain_id" in hotel_data:
+            check_active_query = """
+            SELECT 
+                CASE 
+                    WHEN EXISTS (
+                        SELECT 1 FROM "hotel chains".bookings b
+                        JOIN "hotel chains".rooms r ON b.roomid = r.roomid
+                        WHERE r.hotelid = :hotel_id 
+                        AND b.status IN ('Booked', 'CheckedIn')
+                    ) THEN true
+                    WHEN EXISTS (
+                        SELECT 1 FROM "hotel chains".rentings rt
+                        JOIN "hotel chains".rooms r ON rt.roomid = r.roomid
+                        WHERE r.hotelid = :hotel_id 
+                        AND rt.status = 'CheckedIn'
+                    ) THEN true
+                    ELSE false
+                END as has_active
+            """
+            result = db.execute(text(check_active_query), {"hotel_id": hotel_id})
+            if result.scalar():
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cannot change hotel chain while there are active bookings or rentings"
+                )
+        
+        # Update hotel
         query = """
-        UPDATE hotels 
-        SET chainid = :chain_id, category = :category, name = :name
+        UPDATE "hotel chains".hotels 
+        SET chainid = COALESCE(:chain_id, chainid),
+            hname = COALESCE(:name, hname),
+            haddress = COALESCE(:address, haddress),
+            hemail = COALESCE(:email, hemail),
+            hphone = COALESCE(:phone, hphone),
+            num_of_rooms = COALESCE(:num_of_rooms, num_of_rooms),
+            managerid = COALESCE(:manager_id, managerid)
         WHERE hotelid = :hotel_id
         """
         params = {**hotel_data, "hotel_id": hotel_id}
-        db.execute(text(query), params)
+        result = db.execute(text(query), params)
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Hotel {hotel_id} not found")
         db.commit()
         return {"message": "Hotel updated successfully"}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in update_hotel: {str(e)}")
@@ -581,10 +835,51 @@ def update_hotel(hotel_id: int, hotel_data: dict, db = Depends(get_db)):
 @app.delete("/api/hotels/{hotel_id}")
 def delete_hotel(hotel_id: int, db = Depends(get_db)):
     try:
-        query = 'DELETE FROM hotels WHERE hotelid = :hotel_id'
-        db.execute(text(query), {"hotel_id": hotel_id})
+        # Check if hotel exists
+        check_query = """
+        SELECT hotelid FROM "hotel chains".hotels 
+        WHERE hotelid = :hotel_id
+        """
+        result = db.execute(text(check_query), {"hotel_id": hotel_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail=f"Hotel {hotel_id} not found")
+        
+        # Check for active bookings or rentings
+        check_active_query = """
+        SELECT 
+            CASE 
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".bookings b
+                    JOIN "hotel chains".rooms r ON b.roomid = r.roomid
+                    WHERE r.hotelid = :hotel_id 
+                    AND b.status IN ('Booked', 'CheckedIn')
+                ) THEN true
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".rentings rt
+                    JOIN "hotel chains".rooms r ON rt.roomid = r.roomid
+                    WHERE r.hotelid = :hotel_id 
+                    AND rt.status = 'CheckedIn'
+                ) THEN true
+                ELSE false
+            END as has_active
+        """
+        result = db.execute(text(check_active_query), {"hotel_id": hotel_id})
+        if result.scalar():
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot delete hotel with active bookings or rentings"
+            )
+        
+        # Delete hotel
+        query = 'DELETE FROM "hotel chains".hotels WHERE hotelid = :hotel_id'
+        result = db.execute(text(query), {"hotel_id": hotel_id})
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Hotel {hotel_id} not found")
         db.commit()
         return {"message": "Hotel deleted successfully"}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in delete_hotel: {str(e)}")
@@ -593,15 +888,71 @@ def delete_hotel(hotel_id: int, db = Depends(get_db)):
 @app.put("/api/rooms/{room_id}")
 def update_room(room_id: int, room_data: dict, db = Depends(get_db)):
     try:
+        # Check if room exists
+        check_query = """
+        SELECT roomid FROM "hotel chains".rooms 
+        WHERE roomid = :room_id
+        """
+        result = db.execute(text(check_query), {"room_id": room_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail=f"Room {room_id} not found")
+        
+        # Check if hotel exists if trying to change hotel
+        if "hotel_id" in room_data:
+            hotel_query = """
+            SELECT hotelid FROM "hotel chains".hotels 
+            WHERE hotelid = :hotel_id
+            """
+            result = db.execute(text(hotel_query), {"hotel_id": room_data["hotel_id"]})
+            if not result.first():
+                raise HTTPException(status_code=404, detail=f"Hotel {room_data['hotel_id']} not found")
+        
+        # Check for active bookings or rentings if trying to change hotel
+        if "hotel_id" in room_data:
+            check_active_query = """
+            SELECT 
+                CASE 
+                    WHEN EXISTS (
+                        SELECT 1 FROM "hotel chains".bookings 
+                        WHERE roomid = :room_id 
+                        AND status IN ('Booked', 'CheckedIn')
+                    ) THEN true
+                    WHEN EXISTS (
+                        SELECT 1 FROM "hotel chains".rentings 
+                        WHERE roomid = :room_id 
+                        AND status = 'CheckedIn'
+                    ) THEN true
+                    ELSE false
+                END as has_active
+            """
+            result = db.execute(text(check_active_query), {"room_id": room_id})
+            if result.scalar():
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cannot change room's hotel while there are active bookings or rentings"
+                )
+        
+        # Update room
         query = """
-        UPDATE rooms 
-        SET hotelid = :hotel_id, price = :price, capacity = :capacity, area = :area
+        UPDATE "hotel chains".rooms 
+        SET hotelid = COALESCE(:hotel_id, hotelid),
+            price = COALESCE(:price, price),
+            capacity = COALESCE(:capacity, capacity),
+            view_type = COALESCE(:view_type, view_type),
+            extendable = COALESCE(:extendable, extendable),
+            amenities = COALESCE(:amenities, amenities),
+            damages = COALESCE(:damages, damages)
         WHERE roomid = :room_id
         """
         params = {**room_data, "room_id": room_id}
-        db.execute(text(query), params)
+        result = db.execute(text(query), params)
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Room {room_id} not found")
         db.commit()
         return {"message": "Room updated successfully"}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in update_room: {str(e)}")
@@ -610,28 +961,135 @@ def update_room(room_id: int, room_data: dict, db = Depends(get_db)):
 @app.delete("/api/rooms/{room_id}")
 def delete_room(room_id: int, db = Depends(get_db)):
     try:
-        query = 'DELETE FROM rooms WHERE roomid = :room_id'
-        db.execute(text(query), {"room_id": room_id})
+        # Check if room exists
+        check_query = """
+        SELECT roomid FROM "hotel chains".rooms 
+        WHERE roomid = :room_id
+        """
+        result = db.execute(text(check_query), {"room_id": room_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail=f"Room {room_id} not found")
+        
+        # Check for active bookings or rentings
+        check_active_query = """
+        SELECT 
+            CASE 
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".bookings 
+                    WHERE roomid = :room_id 
+                    AND status IN ('Booked', 'CheckedIn')
+                ) THEN true
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".rentings 
+                    WHERE roomid = :room_id 
+                    AND status = 'CheckedIn'
+                ) THEN true
+                ELSE false
+            END as has_active
+        """
+        result = db.execute(text(check_active_query), {"room_id": room_id})
+        if result.scalar():
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot delete room with active bookings or rentings"
+            )
+        
+        # Delete room
+        query = 'DELETE FROM "hotel chains".rooms WHERE roomid = :room_id'
+        result = db.execute(text(query), {"room_id": room_id})
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Room {room_id} not found")
         db.commit()
         return {"message": "Room deleted successfully"}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in delete_room: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Employee management endpoints
 @app.put("/api/employees/{employee_id}")
 def update_employee(employee_id: int, employee_data: dict, db = Depends(get_db)):
     try:
+        # Check if employee exists
+        check_query = """
+        SELECT employeeid FROM "hotel chains".employees 
+        WHERE employeeid = :employee_id
+        """
+        result = db.execute(text(check_query), {"employee_id": employee_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail=f"Employee {employee_id} not found")
+        
+        # Check if hotel exists if trying to change hotel
+        if "hotel_id" in employee_data:
+            hotel_query = """
+            SELECT hotelid FROM "hotel chains".hotels 
+            WHERE hotelid = :hotel_id
+            """
+            result = db.execute(text(hotel_query), {"hotel_id": employee_data["hotel_id"]})
+            if not result.first():
+                raise HTTPException(status_code=404, detail=f"Hotel {employee_data['hotel_id']} not found")
+        
+        # Check if employee is a manager and has active rentings if trying to change hotel
+        if "hotel_id" in employee_data:
+            check_manager_query = """
+            SELECT 
+                CASE 
+                    WHEN EXISTS (
+                        SELECT 1 FROM "hotel chains".hotels 
+                        WHERE managerid = :employee_id
+                    ) THEN true
+                    ELSE false
+                END as is_manager
+            """
+            result = db.execute(text(check_manager_query), {"employee_id": employee_id})
+            if result.scalar():
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cannot change hotel for an employee who is a hotel manager"
+                )
+            
+            check_active_query = """
+            SELECT 
+                CASE 
+                    WHEN EXISTS (
+                        SELECT 1 FROM "hotel chains".rentings 
+                        WHERE employeeid = :employee_id 
+                        AND status = 'CheckedIn'
+                    ) THEN true
+                    ELSE false
+                END as has_active
+            """
+            result = db.execute(text(check_active_query), {"employee_id": employee_id})
+            if result.scalar():
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Cannot change hotel for an employee with active rentings"
+                )
+        
+        # Update employee
         query = """
-        UPDATE employees 
-        SET name = :name, hotelid = :hotel_id
+        UPDATE "hotel chains".employees 
+        SET efirstname = COALESCE(:firstname, efirstname),
+            elastname = COALESCE(:lastname, elastname),
+            eaddress = COALESCE(:address, eaddress),
+            hotelid = COALESCE(:hotel_id, hotelid),
+            erole = COALESCE(:role, erole),
+            ephone = COALESCE(:phone, ephone),
+            eemail = COALESCE(:email, eemail),
+            sin = COALESCE(:sin, sin)
         WHERE employeeid = :employee_id
         """
         params = {**employee_data, "employee_id": employee_id}
-        db.execute(text(query), params)
+        result = db.execute(text(query), params)
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Employee {employee_id} not found")
         db.commit()
         return {"message": "Employee updated successfully"}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in update_employee: {str(e)}")
@@ -640,10 +1098,62 @@ def update_employee(employee_id: int, employee_data: dict, db = Depends(get_db))
 @app.delete("/api/employees/{employee_id}")
 def delete_employee(employee_id: int, db = Depends(get_db)):
     try:
-        query = 'DELETE FROM employees WHERE employeeid = :employee_id'
-        db.execute(text(query), {"employee_id": employee_id})
+        # Check if employee exists
+        check_query = """
+        SELECT employeeid FROM "hotel chains".employees 
+        WHERE employeeid = :employee_id
+        """
+        result = db.execute(text(check_query), {"employee_id": employee_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail=f"Employee {employee_id} not found")
+        
+        # Check if employee is a manager
+        check_manager_query = """
+        SELECT 
+            CASE 
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".hotels 
+                    WHERE managerid = :employee_id
+                ) THEN true
+                ELSE false
+            END as is_manager
+        """
+        result = db.execute(text(check_manager_query), {"employee_id": employee_id})
+        if result.scalar():
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot delete an employee who is a hotel manager"
+            )
+        
+        # Check for active rentings
+        check_active_query = """
+        SELECT 
+            CASE 
+                WHEN EXISTS (
+                    SELECT 1 FROM "hotel chains".rentings 
+                    WHERE employeeid = :employee_id 
+                    AND status = 'CheckedIn'
+                ) THEN true
+                ELSE false
+            END as has_active
+        """
+        result = db.execute(text(check_active_query), {"employee_id": employee_id})
+        if result.scalar():
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot delete employee with active rentings"
+            )
+        
+        # Delete employee
+        query = 'DELETE FROM "hotel chains".employees WHERE employeeid = :employee_id'
+        result = db.execute(text(query), {"employee_id": employee_id})
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Employee {employee_id} not found")
         db.commit()
         return {"message": "Employee deleted successfully"}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in delete_employee: {str(e)}")
