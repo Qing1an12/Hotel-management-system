@@ -5,11 +5,11 @@ from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, validator, Field
+from datetime import date, datetime
 from typing import List, Optional
 import os
 from dotenv import load_dotenv
-from datetime import date, datetime
 import logging
 
 # Configure logging
@@ -121,16 +121,50 @@ class CustomerCreate(BaseModel):
 class BookingCreate(BaseModel):
     room_id: int
     customer_id: int
-    start_date: date
-    end_date: date
+    start_date: str = Field(..., description="Date in YYYY-MM-DD format")
+    end_date: str = Field(..., description="Date in YYYY-MM-DD format")
+
+    @validator('start_date', 'end_date')
+    def validate_date(cls, v):
+        try:
+            datetime.strptime(v, '%Y-%m-%d')
+            return v
+        except ValueError:
+            raise ValueError('Date must be in YYYY-MM-DD format')
+
+    @validator('end_date')
+    def validate_end_date(cls, v, values):
+        if 'start_date' in values:
+            start = datetime.strptime(values['start_date'], '%Y-%m-%d')
+            end = datetime.strptime(v, '%Y-%m-%d')
+            if end <= start:
+                raise ValueError('End date must be after start date')
+        return v
 
 class RentingCreate(BaseModel):
     booking_id: Optional[int] = None
     room_id: int
     customer_id: int
     employee_id: int
-    start_date: date
-    end_date: date
+    start_date: str = Field(..., description="Date in YYYY-MM-DD format")
+    end_date: str = Field(..., description="Date in YYYY-MM-DD format")
+
+    @validator('start_date', 'end_date')
+    def validate_date(cls, v):
+        try:
+            datetime.strptime(v, '%Y-%m-%d')
+            return v
+        except ValueError:
+            raise ValueError('Date must be in YYYY-MM-DD format')
+
+    @validator('end_date')
+    def validate_end_date(cls, v, values):
+        if 'start_date' in values:
+            start = datetime.strptime(values['start_date'], '%Y-%m-%d')
+            end = datetime.strptime(v, '%Y-%m-%d')
+            if end <= start:
+                raise ValueError('End date must be after start date')
+        return v
 
 @app.get("/api/hotel-chains")
 def get_hotel_chains(db = Depends(get_db)):
@@ -170,8 +204,8 @@ def get_hotels(chain_id: Optional[int] = None, category: Optional[int] = None, d
         logger.error(f"Error in get_hotels: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/rooms/available")
-async def get_available_rooms(
+@app.get("/api/available-rooms")
+def get_available_rooms(
     start_date: str,
     end_date: str,
     capacity: Optional[int] = None,
@@ -182,148 +216,134 @@ async def get_available_rooms(
     db = Depends(get_db)
 ):
     try:
-        # Validate dates
-        try:
-            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
-            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
-            
-            if start_date_obj < date.today():
-                raise HTTPException(status_code=400, detail="Start date cannot be in the past")
-            
-            if end_date_obj <= start_date_obj:
-                raise HTTPException(status_code=400, detail="End date must be after start date")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail="Invalid date format. Please use YYYY-MM-DD")
-
-        query = text("""
-        SELECT 
-            r.*,
-            h.hname as hotel_name,
-            hc.cname as chain_name,
-            h.haddress as hotel_address,
-            h.hemail as hotel_email,
-            h.hphone as hotel_phone
-        FROM rooms r
-        JOIN hotels h ON r.hotelid = h.hotelid
-        JOIN hotelchains hc ON h.chainid = hc.chainid
-        WHERE r.roomid NOT IN (
-            SELECT roomid FROM bookings
-            WHERE startdate <= :end_date AND enddate >= :start_date
-            UNION
-            SELECT roomid FROM rentings
-            WHERE startdate <= :end_date AND enddate >= :start_date
-        )
-        """)
+        # Convert string dates to datetime
+        start = datetime.strptime(start_date, '%Y-%m-%d').date()
+        end = datetime.strptime(end_date, '%Y-%m-%d').date()
         
-        params = {
-            "start_date": start_date_obj,
-            "end_date": end_date_obj
-        }
-        
-        conditions = []
-        if capacity is not None:
-            conditions.append("r.capacity = :capacity")
-            params["capacity"] = capacity
-        if area:
-            conditions.append("r.area = :area")
-            params["area"] = area
-        if hotel_chain:
-            conditions.append("hc.cname = :hotel_chain")
-            params["hotel_chain"] = hotel_chain
-        if hotel_category is not None:
-            conditions.append("h.category = :hotel_category")
-            params["hotel_category"] = hotel_category
-        if max_price is not None:
-            conditions.append("r.price <= :max_price")
-            params["max_price"] = max_price
-            
-        if conditions:
-            query = text(str(query) + " AND " + " AND ".join(conditions))
-            
-        logger.debug(f"Executing query: {query}")
-        logger.debug(f"With parameters: {params}")
-        
-        result = db.execute(query, params)
-        rows = []
-        for row in result:
-            row_dict = {}
-            for idx, col in enumerate(result.keys()):
-                row_dict[col] = row[idx]
-            rows.append(row_dict)
-            
-        logger.debug(f"Found {len(rows)} available rooms")
-        return rows
-    except HTTPException as e:
-        # Re-raise HTTP exceptions
-        raise e
-    except Exception as e:
-        logger.error(f"Error in get_available_rooms: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/customers")
-async def create_customer(customer: CustomerCreate, db = Depends(get_db)):
-    try:
-        # Validate customer data
-        if not customer.firstname or not customer.lastname or not customer.address:
-            raise HTTPException(status_code=400, detail="All fields are required")
-            
+        # Base query
         query = """
-        INSERT INTO customers (firstname, lastname, address)
-        VALUES (:firstname, :lastname, :address)
-        RETURNING customerid
+        SELECT r.*, 
+            h.address as hotel_address, 
+            h.email as hotel_email, 
+            h.phone as hotel_phone,
+            hc.name as chain_name
+        FROM "hotel chains".rooms r
+        JOIN "hotel chains".hotels h ON r.hotelid = h.hotelid
+        JOIN "hotel chains".hotelchains hc ON h.chainid = hc.chainid
+        WHERE 1=1
         """
         
-        params = {
-            "firstname": customer.firstname,
-            "lastname": customer.lastname,
-            "address": customer.address
-        }
+        params = {}
         
-        logger.debug(f"Creating customer with params: {params}")
+        # Add filters
+        if capacity:
+            query += " AND r.capacity >= :capacity"
+            params["capacity"] = capacity
+            
+        if area:
+            query += " AND h.address ILIKE :area"
+            params["area"] = f"%{area}%"
+            
+        if hotel_chain:
+            query += " AND hc.name ILIKE :chain"
+            params["chain"] = f"%{hotel_chain}%"
+            
+        if hotel_category:
+            query += " AND h.category = :category"
+            params["category"] = hotel_category
+            
+        if max_price:
+            query += " AND r.price <= :max_price"
+            params["max_price"] = max_price
+            
+        # Execute query
         result = db.execute(text(query), params)
-        customer_id = result.scalar()
-        db.commit()
-        
-        logger.debug(f"Created customer with ID: {customer_id}")
-        return {"customerid": customer_id}
-    except SQLAlchemyError as e:
-        db.rollback()
-        logger.error(f"Database error in create_customer: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    except HTTPException as e:
-        raise e
+        rooms = []
+        for row in result:
+            room_dict = {
+                "roomid": row.roomid,
+                "hotelid": row.hotelid,
+                "price": float(row.price) if row.price else None,
+                "capacity": row.capacity,
+                "view": row.view_type,
+                "extendable": row.extendable,
+                "amenities": row.amenities,
+                "damages": row.damages,
+                "hotel_address": row.hotel_address,
+                "hotel_email": row.hotel_email,
+                "hotel_phone": row.hotel_phone,
+                "chain_name": row.chain_name
+            }
+            rooms.append(room_dict)
+            
+        return rooms
     except Exception as e:
-        db.rollback()
-        logger.error(f"Error in create_customer: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in get_available_rooms: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to search rooms: {str(e)}")
 
 @app.post("/api/bookings")
 def create_booking(booking: BookingCreate, db = Depends(get_db)):
     try:
+        logger.debug(f"Creating booking with data: {booking.dict()}")
+        
         # Check if room exists and get its hotelid
         room_query = 'SELECT hotelid FROM rooms WHERE roomid = :room_id'
         result = db.execute(text(room_query), {"room_id": booking.room_id})
         room = result.first()
         if not room:
-            raise HTTPException(status_code=404, detail="Room not found")
+            logger.error(f"Room not found: {booking.room_id}")
+            raise HTTPException(status_code=404, detail=f"Room {booking.room_id} not found")
+        
+        # Check if customer exists
+        customer_query = 'SELECT customerid FROM customers WHERE customerid = :customer_id'
+        result = db.execute(text(customer_query), {"customer_id": booking.customer_id})
+        if not result.first():
+            logger.error(f"Customer not found: {booking.customer_id}")
+            raise HTTPException(status_code=404, detail=f"Customer {booking.customer_id} not found")
+        
+        # Check if room is available for the given dates
+        availability_query = """
+        SELECT COUNT(*) FROM bookings 
+        WHERE roomid = :room_id 
+        AND ((startdate <= :end_date AND enddate >= :start_date)
+        OR (startdate >= :start_date AND startdate <= :end_date))
+        """
+        params = {
+            "room_id": booking.room_id,
+            "start_date": datetime.strptime(booking.start_date, '%Y-%m-%d').date(),
+            "end_date": datetime.strptime(booking.end_date, '%Y-%m-%d').date()
+        }
+        logger.debug(f"Checking room availability with params: {params}")
+        result = db.execute(text(availability_query), params)
+        if result.scalar() > 0:
+            logger.error(f"Room {booking.room_id} not available for dates: {booking.start_date} to {booking.end_date}")
+            raise HTTPException(status_code=400, detail="Room is not available for the selected dates")
         
         # Create the booking
         query = """
-        INSERT INTO bookings (roomid, hotelid, customerid, start_date, end_date)
+        INSERT INTO bookings (roomid, hotelid, customerid, startdate, enddate)
         VALUES (:room_id, :hotel_id, :customer_id, :start_date, :end_date)
         RETURNING bookingid
         """
         params = {
             **booking.dict(),
-            "hotel_id": room[0]
+            "hotel_id": room[0],
+            "start_date": datetime.strptime(booking.start_date, '%Y-%m-%d').date(),
+            "end_date": datetime.strptime(booking.end_date, '%Y-%m-%d').date()
         }
+        logger.debug(f"Creating booking with SQL params: {params}")
         result = db.execute(text(query), params)
+        booking_id = result.scalar()
         db.commit()
-        return {"bookingid": result.scalar()}
+        logger.info(f"Successfully created booking {booking_id}")
+        return {"bookingid": booking_id}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
-        logger.error(f"Error in create_booking: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in create_booking: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create booking: {str(e)}")
 
 @app.post("/api/rentings")
 def create_renting(renting: RentingCreate, db = Depends(get_db)):
@@ -335,23 +355,60 @@ def create_renting(renting: RentingCreate, db = Depends(get_db)):
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
         
+        # Check if employee exists
+        emp_query = 'SELECT employeeid FROM employees WHERE employeeid = :employee_id'
+        result = db.execute(text(emp_query), {"employee_id": renting.employee_id})
+        if not result.first():
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        # Check if room is available for the given dates
+        availability_query = """
+        SELECT COUNT(*) FROM rentings 
+        WHERE roomid = :room_id 
+        AND ((startdate <= :end_date AND enddate >= :start_date)
+        OR (startdate >= :start_date AND startdate <= :end_date))
+        """
+        result = db.execute(text(availability_query), {
+            "room_id": renting.room_id,
+            "start_date": datetime.strptime(renting.start_date, '%Y-%m-%d').date(),
+            "end_date": datetime.strptime(renting.end_date, '%Y-%m-%d').date()
+        })
+        if result.scalar() > 0:
+            raise HTTPException(status_code=400, detail="Room is not available for the selected dates")
+        
         # Create the renting
         query = """
-        INSERT INTO rentings (rentingid, roomid, hotelid, customerid, employeeid, start_date, end_date, status)
-        VALUES (:booking_id, :room_id, :hotel_id, :customer_id, :employee_id, :start_date, :end_date, 'CheckedIn')
+        INSERT INTO rentings (roomid, hotelid, customerid, employeeid, startdate, enddate, status)
+        VALUES (:room_id, :hotel_id, :customer_id, :employee_id, :start_date, :end_date, 'CheckedIn')
         RETURNING rentingid
         """
         params = {
             **renting.dict(),
-            "hotel_id": room[0]
+            "hotel_id": room[0],
+            "start_date": datetime.strptime(renting.start_date, '%Y-%m-%d').date(),
+            "end_date": datetime.strptime(renting.end_date, '%Y-%m-%d').date()
         }
         result = db.execute(text(query), params)
         db.commit()
+        
+        # If this was from a booking, update the booking status
+        if renting.booking_id:
+            update_query = """
+            UPDATE bookings 
+            SET status = 'CheckedIn'
+            WHERE bookingid = :booking_id
+            """
+            db.execute(text(update_query), {"booking_id": renting.booking_id})
+            db.commit()
+            
         return {"rentingid": result.scalar()}
+    except HTTPException as e:
+        db.rollback()
+        raise e
     except Exception as e:
         db.rollback()
         logger.error(f"Error in create_renting: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to create renting: {str(e)}")
 
 @app.get("/api/employees")
 def get_employees(hotel_id: Optional[int] = None, db = Depends(get_db)):
@@ -404,6 +461,23 @@ def get_customer_rentings(customer_id: int, db = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error in get_customer_rentings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/customers")
+def create_customer(customer: CustomerCreate, db = Depends(get_db)):
+    try:
+        query = """
+        INSERT INTO customers (firstname, lastname, address)
+        VALUES (:firstname, :lastname, :address)
+        RETURNING customerid
+        """
+        result = db.execute(text(query), customer.dict())
+        customer_id = result.scalar()
+        db.commit()
+        return {"customerid": customer_id}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error in create_customer: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create customer: {str(e)}")
 
 # Additional endpoints for management
 @app.put("/api/customers/{customer_id}")

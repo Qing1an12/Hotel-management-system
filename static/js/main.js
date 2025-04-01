@@ -39,18 +39,26 @@ document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('input[name="userType"]').forEach(radio => {
         radio.addEventListener('change', function() {
             isEmployee = this.value === 'employee';
-            document.getElementById('employeeFields').style.display = isEmployee ? 'block' : 'none';
-            document.getElementById('customerFields').style.display = !isEmployee ? 'block' : 'none';
+            document.querySelectorAll('.employee-only').forEach(el => {
+                el.style.display = isEmployee ? 'block' : 'none';
+            });
         });
     });
+
+    // Customer registration form
+    document.getElementById('customerRegistrationForm').addEventListener('submit', handleCustomerRegistration);
+
+    // Search form
+    document.getElementById('searchForm').addEventListener('submit', handleSearch);
+
+    // Booking confirmation
+    document.getElementById('confirmBooking').addEventListener('click', handleBookingConfirmation);
 
     // Load initial data
     loadHotelChains();
 
     // Set up event listeners
-    document.getElementById('searchForm').addEventListener('submit', handleSearch);
     document.getElementById('customerForm').addEventListener('submit', handleCustomerForm);
-    document.getElementById('confirmBooking').addEventListener('click', handleBookingConfirmation);
 });
 
 // API Functions
@@ -129,7 +137,7 @@ async function handleSearch(e) {
         }
 
         console.log('Searching with params:', params.toString());
-        const response = await fetch(`/api/rooms/available?${params}`);
+        const response = await fetch(`/api/available-rooms?${params}`);
         
         if (!response.ok) {
             const errorData = await response.json().catch(() => null);
@@ -154,110 +162,128 @@ async function handleSearch(e) {
     }
 }
 
-function displaySearchResults(rooms) {
+async function displaySearchResults(rooms) {
     const resultsDiv = document.getElementById('searchResults');
     resultsDiv.innerHTML = '';
 
-    if (!Array.isArray(rooms) || rooms.length === 0) {
-        const noResults = document.createElement('div');
-        noResults.className = 'alert alert-info';
-        noResults.textContent = 'No rooms available for the selected criteria.';
-        resultsDiv.appendChild(noResults);
+    if (!rooms || rooms.length === 0) {
+        resultsDiv.innerHTML = '<div class="alert alert-info">No rooms available for the selected criteria.</div>';
         return;
     }
 
     const container = document.createElement('div');
-    container.className = 'row g-4';
+    container.className = 'row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4';
 
     rooms.forEach(room => {
-        const col = document.createElement('div');
-        col.className = 'col-md-6 col-lg-4';
-
         const card = document.createElement('div');
-        card.className = 'card h-100 room-card';
-
-        const cardBody = document.createElement('div');
-        cardBody.className = 'card-body';
-
-        const title = document.createElement('h5');
-        title.className = 'card-title';
-        title.textContent = `${room.hotel_name} - Room ${room.roomid}`;
-
-        const chainName = document.createElement('h6');
-        chainName.className = 'card-subtitle mb-2 text-muted';
-        chainName.textContent = room.chain_name;
-
-        const details = document.createElement('ul');
-        details.className = 'list-unstyled';
-        details.innerHTML = `
-            <li><strong>Price:</strong> $${room.price}/night</li>
-            <li><strong>Capacity:</strong> ${room.capacity} ${room.capacity === 1 ? 'person' : 'people'}</li>
-            <li><strong>Area:</strong> ${room.area}</li>
+        card.className = 'col';
+        card.innerHTML = `
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">Room ${room.roomid}</h5>
+                    <h6 class="card-subtitle mb-2 text-muted">${room.chain_name}</h6>
+                    <p class="card-text">
+                        <strong>Price:</strong> $${room.price}/night<br>
+                        <strong>Capacity:</strong> ${room.capacity} people<br>
+                        <strong>View:</strong> ${room.view || 'Not specified'}<br>
+                        <strong>Address:</strong> ${room.hotel_address}<br>
+                        ${room.extendable ? '<span class="badge bg-success">Extendable</span>' : ''}
+                    </p>
+                    <button class="btn btn-primary" onclick="openBookingModal(${JSON.stringify(room).replace(/"/g, '&quot;')})">
+                        Book Now
+                    </button>
+                </div>
+            </div>
         `;
-
-        const bookButton = document.createElement('button');
-        bookButton.className = 'btn btn-primary mt-3';
-        bookButton.textContent = isEmployee ? 'Create Renting' : 'Book Now';
-        bookButton.onclick = () => openBookingModal(room);
-
-        cardBody.appendChild(title);
-        cardBody.appendChild(chainName);
-        cardBody.appendChild(details);
-        cardBody.appendChild(bookButton);
-        card.appendChild(cardBody);
-        col.appendChild(card);
-        container.appendChild(col);
+        container.appendChild(card);
     });
 
     resultsDiv.appendChild(container);
 }
 
-async function handleCustomerForm(e) {
+async function handleCustomerRegistration(e) {
     e.preventDefault();
-    clearError('customerForm');
-
-    const firstname = document.getElementById('firstname').value.trim();
-    const lastname = document.getElementById('lastname').value.trim();
-    const address = document.getElementById('address').value.trim();
-
-    // Validate input
-    if (!firstname || !lastname || !address) {
-        showError('customerForm', 'All fields are required');
-        return;
-    }
-
     try {
         showLoading();
-        const customerData = { firstname, lastname, address };
-        
-        console.log('Creating customer:', customerData);
+        const formData = {
+            firstname: document.getElementById('customerFirstName').value,
+            lastname: document.getElementById('customerLastName').value,
+            address: document.getElementById('customerAddress').value
+        };
+
         const response = await fetch('/api/customers', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(customerData)
+            body: JSON.stringify(formData)
         });
 
-        const data = await response.json();
-        
         if (!response.ok) {
-            throw new Error(data.detail || 'Failed to create customer');
+            const errorData = await response.json();
+            throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
         }
 
-        console.log('Customer created:', data);
-        currentCustomerId = data.customerid;
+        const result = await response.json();
+        document.getElementById('customerRegistrationForm').reset();
         
-        // Clear form and show success message
-        document.getElementById('customerForm').reset();
-        showError('customerForm', 'Customer information saved successfully!');
-        
-        // Update UI to show customer is logged in
-        document.getElementById('customerInfo').style.display = 'none';
-        document.getElementById('bookingSection').style.display = 'block';
-        
-        // Load customer's bookings
-        await loadCustomerBookings();
+        // Create and show success message
+        const successMessage = `
+            <div class="alert alert-success">
+                <h4 class="alert-heading">Registration Successful!</h4>
+                <p>Your Customer ID is: <strong>${result.customerid}</strong></p>
+                <hr>
+                <p class="mb-0">Please save this ID - you'll need it to make bookings.</p>
+            </div>
+        `;
+        const alertDiv = document.createElement('div');
+        alertDiv.innerHTML = successMessage;
+        document.getElementById('customerRegistrationForm').insertAdjacentElement('beforebegin', alertDiv.firstChild);
+
+        // Auto-scroll to show the success message
+        alertDiv.firstChild.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        // Remove the alert after 30 seconds
+        setTimeout(() => alertDiv.firstChild.remove(), 30000);
     } catch (error) {
-        console.error('Error creating customer:', error);
+        showError('customerRegistrationForm', `Failed to save customer information: ${error.message}`);
+    } finally {
+        hideLoading();
+    }
+}
+
+async function handleCustomerForm(e) {
+    e.preventDefault();
+    try {
+        showLoading();
+        const formData = {
+            firstname: document.getElementById('customerFirstName').value,
+            lastname: document.getElementById('customerLastName').value,
+            address: document.getElementById('customerAddress').value
+        };
+
+        const response = await fetch('/api/customers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(formData)
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const result = await response.json();
+        document.getElementById('customerForm').reset();
+        const successMessage = `Customer created successfully! Your Customer ID is: <strong>${result.customerid}</strong>. Please save this ID for making bookings.`;
+        const alertDiv = document.createElement('div');
+        alertDiv.className = 'alert alert-success mt-3';
+        alertDiv.innerHTML = successMessage;
+        document.getElementById('customerForm').appendChild(alertDiv);
+
+        // Auto-scroll to show the success message
+        alertDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        // Remove the alert after 30 seconds
+        setTimeout(() => alertDiv.remove(), 30000);
+    } catch (error) {
         showError('customerForm', `Failed to save customer information: ${error.message}`);
     } finally {
         hideLoading();
@@ -266,11 +292,21 @@ async function handleCustomerForm(e) {
 
 function openBookingModal(room) {
     const modal = new bootstrap.Modal(document.getElementById('bookingModal'));
+    const startDate = document.getElementById('startDate').value;
+    const endDate = document.getElementById('endDate').value;
+    
+    // Set form values
     document.getElementById('modalRoomId').value = room.roomid;
+    document.getElementById('modalStartDate').value = startDate;
+    document.getElementById('modalEndDate').value = endDate;
+    
+    // Show booking details
     document.getElementById('bookingDetails').innerHTML = `
         <p><strong>Hotel:</strong> ${room.hotel_name}</p>
         <p><strong>Room:</strong> ${room.roomid}</p>
         <p><strong>Price:</strong> $${room.price}/night</p>
+        <p><strong>Check-in:</strong> ${startDate}</p>
+        <p><strong>Check-out:</strong> ${endDate}</p>
     `;
     modal.show();
 }
@@ -280,11 +316,26 @@ async function handleBookingConfirmation() {
         showLoading();
         const roomId = document.getElementById('modalRoomId').value;
         const customerId = document.getElementById('bookingCustomerId').value;
-        const startDate = document.getElementById('startDate').value;
-        const endDate = document.getElementById('endDate').value;
+        const startDate = document.getElementById('modalStartDate').value;
+        const endDate = document.getElementById('modalEndDate').value;
+
+        console.log('Booking confirmation data:', {
+            roomId,
+            customerId,
+            startDate,
+            endDate,
+            isEmployee
+        });
+
+        if (!customerId) {
+            throw new Error('Please enter a Customer ID');
+        }
 
         if (isEmployee) {
             const employeeId = document.getElementById('rentingEmployeeId').value;
+            if (!employeeId) {
+                throw new Error('Please enter an Employee ID');
+            }
             await createRenting(roomId, customerId, employeeId, startDate, endDate);
         } else {
             await createBooking(roomId, customerId, startDate, endDate);
@@ -294,7 +345,10 @@ async function handleBookingConfirmation() {
         alert(`${isEmployee ? 'Renting' : 'Booking'} created successfully!`);
         handleSearch(new Event('submit')); // Refresh search results
     } catch (error) {
-        console.error('Error creating booking or renting:', error);
+        console.error('Error creating booking or renting:', {
+            error: error.message,
+            stack: error.stack
+        });
         showError('bookingForm', `Failed to create ${isEmployee ? 'renting' : 'booking'}: ` + error.message);
     } finally {
         hideLoading();
@@ -302,19 +356,28 @@ async function handleBookingConfirmation() {
 }
 
 async function createBooking(roomId, customerId, startDate, endDate) {
+    const body = {
+        room_id: parseInt(roomId),
+        customer_id: parseInt(customerId),
+        start_date: startDate,
+        end_date: endDate
+    };
+    console.log('Creating booking with:', body);
+    
     const response = await fetch('/api/bookings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            room_id: parseInt(roomId),
-            customer_id: parseInt(customerId),
-            start_date: startDate,
-            end_date: endDate
-        })
+        body: JSON.stringify(body)
     });
 
     if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorData = await response.json().catch(() => null);
+        console.error('Booking creation failed:', {
+            status: response.status,
+            statusText: response.statusText,
+            error: errorData
+        });
+        throw new Error(errorData?.detail || `HTTP error! status: ${response.status}`);
     }
     return response.json();
 }
