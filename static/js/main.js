@@ -271,6 +271,11 @@ async function handleCustomerForm(e) {
         }
 
         const result = await response.json();
+        
+        // Set the current customer ID
+        currentCustomerId = result.customerid;
+        
+        // Reset form and show success message
         document.getElementById('customerForm').reset();
         const successMessage = `Customer created successfully! Your Customer ID is: <strong>${result.customerid}</strong>. Please save this ID for making bookings.`;
         const alertDiv = document.createElement('div');
@@ -283,6 +288,12 @@ async function handleCustomerForm(e) {
 
         // Remove the alert after 30 seconds
         setTimeout(() => alertDiv.remove(), 30000);
+        
+        // Load customer bookings
+        await loadCustomerBookings();
+        
+        // Switch to the My Bookings tab
+        document.querySelector('a[href="#customerBookings"]').click();
     } catch (error) {
         showError('customerForm', `Failed to save customer information: ${error.message}`);
     } finally {
@@ -331,6 +342,9 @@ async function handleBookingConfirmation() {
             throw new Error('Please enter a Customer ID');
         }
 
+        // Set the current customer ID
+        currentCustomerId = customerId;
+
         if (isEmployee) {
             const employeeId = document.getElementById('rentingEmployeeId').value;
             if (!employeeId) {
@@ -343,7 +357,15 @@ async function handleBookingConfirmation() {
 
         bootstrap.Modal.getInstance(document.getElementById('bookingModal')).hide();
         alert(`${isEmployee ? 'Renting' : 'Booking'} created successfully!`);
-        handleSearch(new Event('submit')); // Refresh search results
+        
+        // Load customer bookings after successful booking
+        await loadCustomerBookings();
+        
+        // Refresh search results
+        handleSearch(new Event('submit'));
+        
+        // Switch to the My Bookings tab
+        document.querySelector('a[href="#customerBookings"]').click();
     } catch (error) {
         console.error('Error creating booking or renting:', {
             error: error.message,
@@ -434,12 +456,23 @@ function displayBookings(bookings) {
         : bookings.map(booking => `
             <div class="card mb-3">
                 <div class="card-body">
+                    <h5 class="card-title">${booking.hotel_name}</h5>
                     <h6 class="card-subtitle mb-2 text-muted">Booking ID: ${booking.bookingid}</h6>
-                    <p class="card-text">
-                        Room: ${booking.roomid}<br>
-                        Dates: ${new Date(booking.start_date).toLocaleDateString()} - 
-                              ${new Date(booking.end_date).toLocaleDateString()}
-                    </p>
+                    <div class="card-text">
+                        <p><strong>Room Details:</strong></p>
+                        <ul>
+                            <li>Room Number: ${booking.roomid}</li>
+                            <li>Room Type: ${booking.capacity} person(s), ${booking.view_type} view</li>
+                            <li>Price: $${booking.price}/night</li>
+                        </ul>
+                        <p><strong>Stay Details:</strong></p>
+                        <ul>
+                            <li>Check-in: ${new Date(booking.startdate).toLocaleDateString()}</li>
+                            <li>Check-out: ${new Date(booking.enddate).toLocaleDateString()}</li>
+                            <li>Status: <span class="badge ${booking.status === 'Booked' ? 'bg-success' : 'bg-secondary'}">${booking.status}</span></li>
+                        </ul>
+                        <p><strong>Hotel Address:</strong> ${booking.hotel_address}</p>
+                    </div>
                 </div>
             </div>
         `).join('');
@@ -452,13 +485,23 @@ function displayRentings(rentings) {
         : rentings.map(renting => `
             <div class="card mb-3">
                 <div class="card-body">
+                    <h5 class="card-title">${renting.hotel_name}</h5>
                     <h6 class="card-subtitle mb-2 text-muted">Renting ID: ${renting.rentingid}</h6>
-                    <p class="card-text">
-                        Room: ${renting.roomid}<br>
-                        Status: ${renting.status}<br>
-                        Dates: ${new Date(renting.start_date).toLocaleDateString()} - 
-                              ${new Date(renting.end_date).toLocaleDateString()}
-                    </p>
+                    <div class="card-text">
+                        <p><strong>Room Details:</strong></p>
+                        <ul>
+                            <li>Room Number: ${renting.roomid}</li>
+                            <li>Room Type: ${renting.capacity} person(s), ${renting.view_type} view</li>
+                            <li>Price: $${renting.price}/night</li>
+                        </ul>
+                        <p><strong>Stay Details:</strong></p>
+                        <ul>
+                            <li>Check-in: ${new Date(renting.startdate).toLocaleDateString()}</li>
+                            <li>Check-out: ${new Date(renting.enddate).toLocaleDateString()}</li>
+                            <li>Status: <span class="badge ${renting.status === 'Rented' ? 'bg-success' : 'bg-secondary'}">${renting.status}</span></li>
+                        </ul>
+                        <p><strong>Hotel Address:</strong> ${renting.hotel_address}</p>
+                    </div>
                 </div>
             </div>
         `).join('');

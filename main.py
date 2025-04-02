@@ -483,11 +483,14 @@ def get_customer_bookings(customer_id: int, db = Depends(get_db)):
         SELECT b.bookingid, b.roomid, b.hotelid, b.customerid, 
                b.startdate, b.enddate, b.status,
                r.price, r.view_type, r.capacity,
-               h.hname as hotel_name, h.haddress as hotel_address
+               h.hname as hotel_name, h.haddress as hotel_address,
+               c.cfirstname as customer_firstname, c.clastname as customer_lastname
         FROM "hotel chains".bookings b
         JOIN "hotel chains".rooms r ON b.roomid = r.roomid
         JOIN "hotel chains".hotels h ON b.hotelid = h.hotelid
+        JOIN "hotel chains".customers c ON b.customerid = c.customerid
         WHERE b.customerid = :customer_id
+        ORDER BY b.startdate DESC
         """
         result = db.execute(text(query), {"customer_id": customer_id})
         rows = []
@@ -504,7 +507,8 @@ def get_customer_bookings(customer_id: int, db = Depends(get_db)):
                 "view_type": row.view_type,
                 "capacity": row.capacity,
                 "hotel_name": row.hotel_name,
-                "hotel_address": row.hotel_address
+                "hotel_address": row.hotel_address,
+                "customer_name": f"{row.customer_firstname} {row.customer_lastname}"
             }
             rows.append(row_dict)
         return rows
@@ -520,12 +524,15 @@ def get_customer_rentings(customer_id: int, db = Depends(get_db)):
                r.employeeid, r.startdate, r.enddate, r.status,
                rm.price, rm.view_type, rm.capacity,
                h.hname as hotel_name, h.haddress as hotel_address,
-               e.efirstname as employee_firstname, e.elastname as employee_lastname
+               e.efirstname as employee_firstname, e.elastname as employee_lastname,
+               c.cfirstname as customer_firstname, c.clastname as customer_lastname
         FROM "hotel chains".rentings r
         JOIN "hotel chains".rooms rm ON r.roomid = rm.roomid
         JOIN "hotel chains".hotels h ON r.hotelid = h.hotelid
+        JOIN "hotel chains".customers c ON r.customerid = c.customerid
         LEFT JOIN "hotel chains".employees e ON r.employeeid = e.employeeid
         WHERE r.customerid = :customer_id
+        ORDER BY r.startdate DESC
         """
         result = db.execute(text(query), {"customer_id": customer_id})
         rows = []
@@ -544,8 +551,8 @@ def get_customer_rentings(customer_id: int, db = Depends(get_db)):
                 "capacity": row.capacity,
                 "hotel_name": row.hotel_name,
                 "hotel_address": row.hotel_address,
-                "employee_firstname": row.employee_firstname,
-                "employee_lastname": row.employee_lastname
+                "employee_name": f"{row.employee_firstname} {row.employee_lastname}" if row.employee_firstname else None,
+                "customer_name": f"{row.customer_firstname} {row.customer_lastname}"
             }
             rows.append(row_dict)
         return rows
