@@ -174,12 +174,11 @@ def get_hotel_chains(db = Depends(get_db)):
         for row in result:
             row_dict = {
                 "chainid": row.chainid,
-                "name": row.cname,
+                "cname": row.cname,
                 "num_of_hotels": row.num_of_hotels,
-                "address": row.caddress,
-                "rating": row.rating,
-                "email": row.cemail,
-                "phone": row.cphone
+                "caddress": row.caddress,
+                "cemail": row.cemail,
+                "cphone": row.cphone
             }
             rows.append(row_dict)
         return rows
@@ -195,16 +194,16 @@ def get_hotels(chain_id: Optional[int] = None, db = Depends(get_db)):
         if chain_id:
             query += " AND chainid = :chain_id"
             params['chain_id'] = chain_id
+        
         result = db.execute(text(query), params)
         rows = []
         for row in result:
             row_dict = {
                 "hotelid": row.hotelid,
-                "address": row.haddress,
-                "name": row.hname,
+                "haddress": row.haddress,
                 "num_of_rooms": row.num_of_rooms,
-                "email": row.hemail,
-                "phone": row.hphone,
+                "hemail": row.hemail,
+                "hphone": row.hphone,
                 "chainid": row.chainid,
                 "managerid": row.managerid
             }
@@ -229,39 +228,43 @@ def get_available_rooms(
         start = datetime.strptime(start_date, '%Y-%m-%d').date()
         end = datetime.strptime(end_date, '%Y-%m-%d').date()
         
-        # Base query
+        # First check if we have any rooms at all
+        room_count = db.execute(text('SELECT COUNT(*) FROM "hotel chains".rooms')).scalar()
+        
+        if room_count == 0:
+            return []
+            
+        # Get all rooms first, then check bookings
         query = """
-        SELECT r.*, 
-            h.haddress as hotel_address, 
-            h.hemail as hotel_email, 
-            h.hphone as hotel_phone,
-            h.hname as hotel_name,
-            hc.cname as chain_name,
-            hc.caddress as chain_address,
-            hc.cemail as chain_email,
-            hc.cphone as chain_phone,
-            hc.rating as chain_rating
+        SELECT r.roomid, 
+               r.hotelid,
+               r.price,
+               r.capacity,
+               r.view,
+               r.amenities,
+               r.problems,
+               r.extendable,
+               h.haddress as address, 
+               h.hemail as hotel_email, 
+               h.hphone as hotel_phone, 
+               h.num_of_rooms,
+               hc.cname as chain_name, 
+               hc.cemail as chain_email, 
+               hc.cphone as chain_phone,
+               b.bookingid
         FROM "hotel chains".rooms r
         JOIN "hotel chains".hotels h ON r.hotelid = h.hotelid
         JOIN "hotel chains".hotelchains hc ON h.chainid = hc.chainid
-        WHERE r.roomid NOT IN (
-            SELECT roomid FROM "hotel chains".bookings 
-            WHERE status = 'Booked' 
-            AND startdate <= :end_date 
-            AND enddate >= :start_date
-            UNION
-            SELECT roomid FROM "hotel chains".rentings 
-            WHERE startdate <= :end_date 
-            AND enddate >= :start_date
-        )
+        LEFT JOIN "hotel chains".bookings b ON r.roomid = b.roomid
+            AND b.startdate <= :end_date 
+            AND b.enddate >= :start_date
+            AND b.status = 'Booked'
+        WHERE b.bookingid IS NULL
         """
         
-        params = {
-            "start_date": start,
-            "end_date": end
-        }
+        params = {"start_date": start, "end_date": end}
         
-        # Add filters
+        # Add filters one by one
         if capacity:
             query += " AND r.capacity >= :capacity"
             params["capacity"] = capacity
@@ -278,32 +281,33 @@ def get_available_rooms(
             query += " AND r.price <= :max_price"
             params["max_price"] = max_price
             
-        # Execute query
         result = db.execute(text(query), params)
-        rooms = []
-        for row in result:
+        rooms = list(result)
+        
+        formatted_rooms = []
+        for row in rooms:
             room_dict = {
                 "roomid": row.roomid,
                 "hotelid": row.hotelid,
                 "price": float(row.price) if row.price else None,
                 "capacity": row.capacity,
-                "view": row.view_type,
-                "extendable": row.extendable,
+                "view": row.view,
                 "amenities": row.amenities,
-                "damages": row.damages,
-                "hotel_name": row.hotel_name,
-                "hotel_address": row.hotel_address,
+                "problems": row.problems,
+                "extendable": row.extendable,
+                "hotel_address": row.address,
                 "hotel_email": row.hotel_email,
                 "hotel_phone": row.hotel_phone,
+                "hotel_category": row.num_of_rooms,
                 "chain_name": row.chain_name,
-                "chain_address": row.chain_address,
                 "chain_email": row.chain_email,
                 "chain_phone": row.chain_phone,
-                "chain_rating": row.chain_rating
+                "is_available": True
             }
-            rooms.append(room_dict)
+            formatted_rooms.append(room_dict)
             
-        return rooms
+        return formatted_rooms
+            
     except Exception as e:
         logger.error(f"Error in get_available_rooms: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to search rooms: {str(e)}")
@@ -334,9 +338,9 @@ def create_booking(booking: BookingCreate, db = Depends(get_db)):
         availability_query = """
         SELECT COUNT(*) FROM "hotel chains".bookings 
         WHERE roomid = :room_id 
-        AND status = 'Booked'
         AND ((startdate <= :end_date AND enddate >= :start_date)
              OR (startdate >= :start_date AND startdate <= :end_date))
+        AND status = 'Booked'
         """
         result = db.execute(text(availability_query), {
             "room_id": booking.room_id,
@@ -415,8 +419,8 @@ def create_renting(renting: RentingCreate, db = Depends(get_db)):
         
         # Create the renting
         query = """
-        INSERT INTO "hotel chains".rentings (roomid, hotelid, customerid, employeeid, startdate, enddate, status)
-        VALUES (:room_id, :hotel_id, :customer_id, :employee_id, :start_date, :end_date, 'CheckedIn')
+        INSERT INTO "hotel chains".rentings (roomid, hotelid, customerid, employeeid, startdate, enddate)
+        VALUES (:room_id, :hotel_id, :customer_id, :employee_id, :start_date, :end_date)
         RETURNING rentingid
         """
         params = {
@@ -461,14 +465,14 @@ def get_employees(hotel_id: Optional[int] = None, db = Depends(get_db)):
         for row in result:
             row_dict = {
                 "employeeid": row.employeeid,
-                "firstname": row.efirstname,
-                "lastname": row.elastname,
+                "efirstname": row.efirstname,
+                "elastname": row.elastname,
                 "ssnsin": row.ssnsin,
-                "address": row.eaddress,
+                "eaddress": row.eaddress,
                 "hotelid": row.hotelid,
-                "role": row.erole,
-                "phone": row.ephone,
-                "email": row.eemail
+                "erole": row.erole,
+                "ephone": row.ephone,
+                "eemail": row.eemail
             }
             rows.append(row_dict)
         return rows
@@ -481,10 +485,10 @@ def get_customer_bookings(customer_id: int, db = Depends(get_db)):
     try:
         query = """
         SELECT b.bookingid, b.roomid, b.hotelid, b.customerid, 
-               b.startdate, b.enddate, b.status,
-               r.price, r.view_type, r.capacity,
-               h.hname as hotel_name, h.haddress as hotel_address,
-               c.cfirstname as customer_firstname, c.clastname as customer_lastname
+               b.startdate, b.enddate,
+               r.price, r.view, r.capacity,
+               h.haddress as hotel_address, h.num_of_rooms as hotel_category,
+               c.firstname as customer_firstname, c.lastname as customer_lastname
         FROM "hotel chains".bookings b
         JOIN "hotel chains".rooms r ON b.roomid = r.roomid
         JOIN "hotel chains".hotels h ON b.hotelid = h.hotelid
@@ -502,12 +506,11 @@ def get_customer_bookings(customer_id: int, db = Depends(get_db)):
                 "customerid": row.customerid,
                 "startdate": row.startdate,
                 "enddate": row.enddate,
-                "status": row.status,
                 "price": float(row.price) if row.price else None,
-                "view_type": row.view_type,
+                "view": row.view,
                 "capacity": row.capacity,
-                "hotel_name": row.hotel_name,
                 "hotel_address": row.hotel_address,
+                "hotel_category": row.hotel_category,
                 "customer_name": f"{row.customer_firstname} {row.customer_lastname}"
             }
             rows.append(row_dict)
@@ -521,11 +524,11 @@ def get_customer_rentings(customer_id: int, db = Depends(get_db)):
     try:
         query = """
         SELECT r.rentingid, r.roomid, r.hotelid, r.customerid, 
-               r.employeeid, r.startdate, r.enddate, r.status,
-               rm.price, rm.view_type, rm.capacity,
-               h.hname as hotel_name, h.haddress as hotel_address,
+               r.employeeid, r.startdate, r.enddate,
+               rm.price, rm.view, rm.capacity,
+               h.haddress as hotel_address, h.num_of_rooms as hotel_category,
                e.efirstname as employee_firstname, e.elastname as employee_lastname,
-               c.cfirstname as customer_firstname, c.clastname as customer_lastname
+               c.firstname as customer_firstname, c.lastname as customer_lastname
         FROM "hotel chains".rentings r
         JOIN "hotel chains".rooms rm ON r.roomid = rm.roomid
         JOIN "hotel chains".hotels h ON r.hotelid = h.hotelid
@@ -545,12 +548,11 @@ def get_customer_rentings(customer_id: int, db = Depends(get_db)):
                 "employeeid": row.employeeid,
                 "startdate": row.startdate,
                 "enddate": row.enddate,
-                "status": row.status,
                 "price": float(row.price) if row.price else None,
-                "view_type": row.view_type,
+                "view": row.view,
                 "capacity": row.capacity,
-                "hotel_name": row.hotel_name,
                 "hotel_address": row.hotel_address,
+                "hotel_category": row.hotel_category,
                 "employee_name": f"{row.employee_firstname} {row.employee_lastname}" if row.employee_firstname else None,
                 "customer_name": f"{row.customer_firstname} {row.customer_lastname}"
             }
@@ -588,7 +590,14 @@ def create_customer(customer: CustomerCreate, db = Depends(get_db)):
         VALUES (:customerid, :firstname, :lastname, :address, CURRENT_DATE)
         RETURNING customerid
         """
-        result = db.execute(text(query), customer.dict())
+        params = {
+            "customerid": customer.customerid,
+            "firstname": customer.firstname,
+            "lastname": customer.lastname,
+            "address": customer.address
+        }
+        logger.info(f"Executing query: {query} with params: {params}")
+        result = db.execute(text(query), params)
         customer_id = result.scalar()
         db.commit()
         return {"customerid": customer_id}
@@ -608,20 +617,18 @@ def update_customer(customer_id: int, customer: CustomerCreate, db = Depends(get
         result = db.execute(text(check_query), {"customer_id": customer_id})
         if not result.first():
             raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
-        
+
         # Check for active bookings or rentings
         check_active_query = """
         SELECT 
             CASE 
                 WHEN EXISTS (
-                    SELECT 1 FROM "hotel chains".bookings 
-                    WHERE customerid = :customer_id 
-                    AND status IN ('Booked', 'CheckedIn')
+                    SELECT 1 FROM "hotel chains".bookings b
+                    WHERE b.customerid = :customer_id 
                 ) THEN true
                 WHEN EXISTS (
-                    SELECT 1 FROM "hotel chains".rentings 
-                    WHERE customerid = :customer_id 
-                    AND status = 'CheckedIn'
+                    SELECT 1 FROM "hotel chains".rentings rt
+                    WHERE rt.customerid = :customer_id 
                 ) THEN true
                 ELSE false
             END as has_active
@@ -670,14 +677,12 @@ def delete_customer(customer_id: int, db = Depends(get_db)):
         SELECT 
             CASE 
                 WHEN EXISTS (
-                    SELECT 1 FROM "hotel chains".bookings 
-                    WHERE customerid = :customer_id 
-                    AND status IN ('Booked', 'CheckedIn')
+                    SELECT 1 FROM "hotel chains".bookings b
+                    WHERE b.customerid = :customer_id 
                 ) THEN true
                 WHEN EXISTS (
-                    SELECT 1 FROM "hotel chains".rentings 
-                    WHERE customerid = :customer_id 
-                    AND status = 'CheckedIn'
+                    SELECT 1 FROM "hotel chains".rentings rt
+                    WHERE rt.customerid = :customer_id 
                 ) THEN true
                 ELSE false
             END as has_active
@@ -708,15 +713,15 @@ def delete_customer(customer_id: int, db = Depends(get_db)):
 def get_room_capacity_view(db = Depends(get_db)):
     try:
         query = """
-        SELECT h.name as hotel_name, COUNT(*) as total_rooms,
+        SELECT h.haddress as hotel_address, COUNT(*) as total_rooms,
                SUM(CASE WHEN r.capacity = 1 THEN 1 ELSE 0 END) as single_rooms,
                SUM(CASE WHEN r.capacity = 2 THEN 1 ELSE 0 END) as double_rooms,
                SUM(CASE WHEN r.capacity = 3 THEN 1 ELSE 0 END) as triple_rooms,
                SUM(CASE WHEN r.capacity >= 4 THEN 1 ELSE 0 END) as other_rooms
         FROM "hotel chains".hotels h
         JOIN "hotel chains".rooms r ON h.hotelid = r.hotelid
-        GROUP BY h.hotelid, h.name
-        ORDER BY h.name
+        GROUP BY h.hotelid, h.haddress
+        ORDER BY h.haddress
         """
         result = db.execute(text(query))
         rows = []
@@ -734,13 +739,13 @@ def get_room_capacity_view(db = Depends(get_db)):
 def get_room_area_view(db = Depends(get_db)):
     try:
         query = """
-        SELECT h.name as hotel_name, r.area, COUNT(*) as room_count,
+        SELECT h.haddress as hotel_address, r.area, COUNT(*) as room_count,
                MIN(r.price) as min_price, MAX(r.price) as max_price,
                AVG(r.price) as avg_price
         FROM "hotel chains".hotels h
         JOIN "hotel chains".rooms r ON h.hotelid = r.hotelid
-        GROUP BY h.hotelid, h.name, r.area
-        ORDER BY h.name, r.area
+        GROUP BY h.hotelid, h.haddress, r.area
+        ORDER BY h.haddress, r.area
         """
         result = db.execute(text(query))
         rows = []
@@ -795,13 +800,11 @@ def update_hotel(hotel_id: int, hotel_data: dict, db = Depends(get_db)):
                         SELECT 1 FROM "hotel chains".bookings b
                         JOIN "hotel chains".rooms r ON b.roomid = r.roomid
                         WHERE r.hotelid = :hotel_id 
-                        AND b.status IN ('Booked', 'CheckedIn')
                     ) THEN true
                     WHEN EXISTS (
                         SELECT 1 FROM "hotel chains".rentings rt
                         JOIN "hotel chains".rooms r ON rt.roomid = r.roomid
                         WHERE r.hotelid = :hotel_id 
-                        AND rt.status = 'CheckedIn'
                     ) THEN true
                     ELSE false
                 END as has_active
@@ -817,11 +820,10 @@ def update_hotel(hotel_id: int, hotel_data: dict, db = Depends(get_db)):
         query = """
         UPDATE "hotel chains".hotels 
         SET chainid = COALESCE(:chain_id, chainid),
-            hname = COALESCE(:name, hname),
             haddress = COALESCE(:address, haddress),
+            num_of_rooms = COALESCE(:num_of_rooms, num_of_rooms),
             hemail = COALESCE(:email, hemail),
             hphone = COALESCE(:phone, hphone),
-            num_of_rooms = COALESCE(:num_of_rooms, num_of_rooms),
             managerid = COALESCE(:manager_id, managerid)
         WHERE hotelid = :hotel_id
         """
@@ -859,13 +861,11 @@ def delete_hotel(hotel_id: int, db = Depends(get_db)):
                     SELECT 1 FROM "hotel chains".bookings b
                     JOIN "hotel chains".rooms r ON b.roomid = r.roomid
                     WHERE r.hotelid = :hotel_id 
-                    AND b.status IN ('Booked', 'CheckedIn')
                 ) THEN true
                 WHEN EXISTS (
                     SELECT 1 FROM "hotel chains".rentings rt
                     JOIN "hotel chains".rooms r ON rt.roomid = r.roomid
                     WHERE r.hotelid = :hotel_id 
-                    AND rt.status = 'CheckedIn'
                 ) THEN true
                 ELSE false
             END as has_active
@@ -920,14 +920,12 @@ def update_room(room_id: int, room_data: dict, db = Depends(get_db)):
             SELECT 
                 CASE 
                     WHEN EXISTS (
-                        SELECT 1 FROM "hotel chains".bookings 
-                        WHERE roomid = :room_id 
-                        AND status IN ('Booked', 'CheckedIn')
+                        SELECT 1 FROM "hotel chains".bookings b
+                        WHERE b.roomid = :room_id 
                     ) THEN true
                     WHEN EXISTS (
-                        SELECT 1 FROM "hotel chains".rentings 
-                        WHERE roomid = :room_id 
-                        AND status = 'CheckedIn'
+                        SELECT 1 FROM "hotel chains".rentings rt
+                        WHERE rt.roomid = :room_id 
                     ) THEN true
                     ELSE false
                 END as has_active
@@ -945,10 +943,9 @@ def update_room(room_id: int, room_data: dict, db = Depends(get_db)):
         SET hotelid = COALESCE(:hotel_id, hotelid),
             price = COALESCE(:price, price),
             capacity = COALESCE(:capacity, capacity),
-            view_type = COALESCE(:view_type, view_type),
+            view = COALESCE(:view, view),
             extendable = COALESCE(:extendable, extendable),
-            amenities = COALESCE(:amenities, amenities),
-            damages = COALESCE(:damages, damages)
+            problems = COALESCE(:problems, problems)
         WHERE roomid = :room_id
         """
         params = {**room_data, "room_id": room_id}
@@ -982,14 +979,12 @@ def delete_room(room_id: int, db = Depends(get_db)):
         SELECT 
             CASE 
                 WHEN EXISTS (
-                    SELECT 1 FROM "hotel chains".bookings 
-                    WHERE roomid = :room_id 
-                    AND status IN ('Booked', 'CheckedIn')
+                    SELECT 1 FROM "hotel chains".bookings b
+                    WHERE b.roomid = :room_id 
                 ) THEN true
                 WHEN EXISTS (
-                    SELECT 1 FROM "hotel chains".rentings 
-                    WHERE roomid = :room_id 
-                    AND status = 'CheckedIn'
+                    SELECT 1 FROM "hotel chains".rentings rt
+                    WHERE rt.roomid = :room_id 
                 ) THEN true
                 ELSE false
             END as has_active
@@ -1063,7 +1058,6 @@ def update_employee(employee_id: int, employee_data: dict, db = Depends(get_db))
                     WHEN EXISTS (
                         SELECT 1 FROM "hotel chains".rentings 
                         WHERE employeeid = :employee_id 
-                        AND status = 'CheckedIn'
                     ) THEN true
                     ELSE false
                 END as has_active
@@ -1139,7 +1133,6 @@ def delete_employee(employee_id: int, db = Depends(get_db)):
                 WHEN EXISTS (
                     SELECT 1 FROM "hotel chains".rentings 
                     WHERE employeeid = :employee_id 
-                    AND status = 'CheckedIn'
                 ) THEN true
                 ELSE false
             END as has_active

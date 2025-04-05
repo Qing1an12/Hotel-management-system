@@ -5,6 +5,8 @@ import CssBaseline from '@mui/material/CssBaseline';
 import RoomSearch from './components/RoomSearch';
 import Navigation from './components/Navigation';
 import { Container } from '@mui/material';
+import { LocalizationProvider } from '@mui/x-date-pickers';
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 
 const theme = createTheme({
   palette: {
@@ -20,16 +22,18 @@ const theme = createTheme({
 function App() {
   return (
     <ThemeProvider theme={theme}>
-      <CssBaseline />
-      <Router>
-        <Navigation />
-        <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-          <Routes>
-            <Route path="/" element={<RoomSearch />} />
-            {/* Add more routes as needed */}
-          </Routes>
-        </Container>
-      </Router>
+      <LocalizationProvider dateAdapter={AdapterDateFns}>
+        <CssBaseline />
+        <Router>
+          <Navigation />
+          <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+            <Routes>
+              <Route path="/" element={<RoomSearch />} />
+              {/* Add more routes as needed */}
+            </Routes>
+          </Container>
+        </Router>
+      </LocalizationProvider>
     </ThemeProvider>
   );
 }

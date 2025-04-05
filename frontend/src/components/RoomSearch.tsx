@@ -14,9 +14,8 @@ import {
   Box,
 } from '@mui/material';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
-import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
-import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
 import axios from 'axios';
+import { BookingDialog } from './BookingDialog';
 
 interface Room {
   roomid: number;
@@ -38,6 +37,8 @@ const RoomSearch = () => {
   const [hotelCategory, setHotelCategory] = useState('');
   const [maxPrice, setMaxPrice] = useState('');
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
+  const [bookingDialogOpen, setBookingDialogOpen] = useState(false);
 
   const handleSearch = async () => {
     try {
@@ -58,8 +59,13 @@ const RoomSearch = () => {
     }
   };
 
+  const handleBookClick = (room: Room) => {
+    setSelectedRoom(room);
+    setBookingDialogOpen(true);
+  };
+
   return (
-    <LocalizationProvider dateAdapter={AdapterDateFns}>
+    <>
       <Paper sx={{ p: 3, mb: 3 }}>
         <Grid container spacing={3}>
           <Grid item xs={12} sm={6} md={3}>
@@ -67,6 +73,12 @@ const RoomSearch = () => {
               label="Check-in Date"
               value={startDate}
               onChange={(newValue) => setStartDate(newValue)}
+              slotProps={{
+                textField: {
+                  fullWidth: true,
+                  variant: "outlined"
+                }
+              }}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -74,6 +86,12 @@ const RoomSearch = () => {
               label="Check-out Date"
               value={endDate}
               onChange={(newValue) => setEndDate(newValue)}
+              slotProps={{
+                textField: {
+                  fullWidth: true,
+                  variant: "outlined"
+                }
+              }}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
@@ -170,6 +188,7 @@ const RoomSearch = () => {
                   color="primary"
                   fullWidth
                   sx={{ mt: 2 }}
+                  onClick={() => handleBookClick(room)}
                 >
                   Book Now
                 </Button>
@@ -178,7 +197,17 @@ const RoomSearch = () => {
           </Grid>
         ))}
       </Grid>
-    </LocalizationProvider>
+
+      {selectedRoom && (
+        <BookingDialog
+          open={bookingDialogOpen}
+          onClose={() => setBookingDialogOpen(false)}
+          room={selectedRoom}
+          startDate={startDate}
+          endDate={endDate}
+        />
+      )}
+    </>
   );
 };
 
